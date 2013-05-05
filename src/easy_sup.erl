@@ -1,6 +1,36 @@
+
 -module(easy_sup).
 
--compile([export_all]).
+-export([start_link/1]).
+
+-export([one_for_one/2,  one_for_one/3]).
+-export([one_for_all/2,  one_for_all/3]).
+-export([one_for_rest/2, one_for_rest/3]).
+-export([simple_one_for_one/2,  simple_one_for_one/3]).
+-export([worker/1, worker/2]).
+
+-export([test/0]).
+
+start_link({Register, Mfa, MaxRestarts, MaxTime, ChildSpecs}) ->
+    supervisor:start_link(Register, easy_sup, [{Mfa, MaxRestarts, MaxTime, ChildSpecs}]).
+
+one_for_all(Name, ChildSpecs) -> one_for_all(Name, [], ChildSpecs).
+one_for_all(Name, Options, ChildSpecs) -> supervisor_spec(Name, one_for_all, Options, ChildSpecs).
+
+one_for_rest(Name, ChildSpecs) -> one_for_rest(Name, [], ChildSpecs).
+one_for_rest(Name, Options, ChildSpecs) -> supervisor_spec(Name, one_for_rest, Options, ChildSpecs).
+
+one_for_one(Name, ChildSpecs) -> one_for_one(Name, [], ChildSpecs).
+one_for_one(Name, Options, ChildSpecs) -> supervisor_spec(Name, one_for_one, Options, ChildSpecs).
+
+simple_one_for_one(Name, ChildSpec) -> simple_one_for_one(Name, [], ChildSpec).
+simple_one_for_one(Name, Options, ChildSpec) -> supervisor_spec(Name, simple_one_for_one, Options, [ChildSpec]).
+
+supervisor_spec(Name, Type, Options, ChildSpecs) ->
+    Register    = {proplists:get_value(register,     Options, local), Name},
+    MaxRestarts =  proplists:get_value(max_restarts, Options, 10),
+    MaxTime     =  proplists:get_value(max_time,     Options, 10),
+    {Register, {easy_sup, start_link, [{Type, MaxRestarts, MaxTime, ChildSpecs}]}}.
 
 worker(Name) ->
     worker(Name, []).
@@ -10,9 +40,7 @@ worker(Name0, Options) ->
     Restart            = proplists:get_value(restart,  Options, transient),
     Shutdown           = proplists:get_value(shutdown, Options, 1000),
     Modules            = proplists:get_value(modules,  Options, [Module]),
-    Spec = {Name, Mfa, Restart, Shutdown, worker, Modules},
-    ok = supervisor:check_childspecs([Spec]),
-    Spec.
+    {Name, Mfa, Restart, Shutdown, worker, Modules}.
 
 spec_name(Mfa) when is_atom(Mfa)  ->
     Mfa;
@@ -24,38 +52,33 @@ spec_mfa(Mfa) when is_atom(Mfa)  ->
 spec_mfa(Mfa={_M,_F,_A}) ->
     Mfa.
 
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Tests %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
 test() ->
-    test_worker().
+    dot(),test_worker(),
+    dot(),test_supervisor(),
+    dot(),test_big(),
+    io:format("~n"),
+    'Test success!'.
+
+test_supervisor() ->
+    {{local, top}, {easy_sup, start_link, [{one_for_all,        10, 10, [_]}]}} = one_for_all       (top, [worker(test)]),
+    {{local, top}, {easy_sup, start_link, [{one_for_rest,       10, 10, [_]}]}} = one_for_rest      (top, [worker(test)]),
+    {{local, top}, {easy_sup, start_link, [{simple_one_for_one, 10, 10, [_]}]}} = simple_one_for_one(top, worker(test)),
+    {{local, top}, {easy_sup, start_link, [{one_for_one,        10, 10, [_]}]}} = one_for_one       (top, [worker(test)]).
 
 test_worker() ->
     {test, {test, start_link, []}, transient, 1000, worker, [test]} = worker(test),
     {test, {test, start, [a,b,c]}, transient, 1000, worker, [test]} = worker({test, start, [a,b,c]}),
-    {test, {test, start_link, []}, transient, 1000, worker, [test]} = worker(test, [{modules, [test]}]),
-    ok.
+    {test, {test, start_link, []}, transient, 1000, worker, [test]} = worker(test, [{modules, [test]}]).
 
+test_big() ->
+    io:format("~n~p~n", [one_for_all(se_sup, [worker(se_mapper),
+					      simple_one_for_one(se_endpoints_sup, worker({se_endpoint, start, [ahe]}))
+		    ])]).
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% Brainstorm %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-experiment() ->
-
-%    easy_sup(one_for_all(se, [ worker( se_mapper),
-%		      dynamic( se_endpoints )
-%		    ])),
-
-    easy_sup({se_sup, {one_for_all,
-		       [{se_mapper,    worker},
-			{se_endpoints, simple_one_for_one}]}}).
-
-
-
-
-
-%			{se_foo_sup,       {delayed_restart, [{delay, [0,10,100,1000,10000,30000]}],
-%					    [{se_foo, {worker,
-%						       {se_foo, start_link, []}}}]}}]}}).
-
-
-easy_sup(_) ->
-    toto.
+dot() ->
+    io:format(".").
