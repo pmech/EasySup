@@ -1,40 +1,56 @@
 
 -module(easy_sup).
 
--export([start_link/1]).
+-export([start_link/1, init/1]).
 
 -export([one_for_one/2,  one_for_one/3]).
 -export([one_for_all/2,  one_for_all/3]).
--export([one_for_rest/2, one_for_rest/3]).
+-export([rest_for_one/2, rest_for_one/3]).
 -export([simple_one_for_one/2,  simple_one_for_one/3]).
 -export([worker/1, worker/2]).
 
 -export([test/0]).
 
-start_link({Register, Mfa, MaxRestarts, MaxTime, ChildSpecs}) ->
-    supervisor:start_link(Register, easy_sup, [{Mfa, MaxRestarts, MaxTime, ChildSpecs}]).
+-export([testWorker/0]).
 
-one_for_all(Name, ChildSpecs) -> one_for_all(Name, [], ChildSpecs).
-one_for_all(Name, Options, ChildSpecs) -> supervisor_spec(Name, one_for_all, Options, ChildSpecs).
+strip_supervisor_childspec({_Name, {easy_sup, start_link,
+				    [{Register, Args = {_Type, _MaxRestarts, _MaxTime, _ChildSpecs}}]},
+			    transient, 1000, supervisor, []}) ->
+    {Register, Args}.
 
-one_for_rest(Name, ChildSpecs) -> one_for_rest(Name, [], ChildSpecs).
-one_for_rest(Name, Options, ChildSpecs) -> supervisor_spec(Name, one_for_rest, Options, ChildSpecs).
+start_link({Register, Args}) ->
+    supervisor:start_link(Register, easy_sup, Args);
+start_link(SupervisorChildspec) ->
+    start_link(strip_supervisor_childspec(SupervisorChildspec)).
 
-one_for_one(Name, ChildSpecs) -> one_for_one(Name, [], ChildSpecs).
-one_for_one(Name, Options, ChildSpecs) -> supervisor_spec(Name, one_for_one, Options, ChildSpecs).
+init({Type, MaxRestarts, MaxTime, ChildSpecs}) ->
+    {ok, {{Type, MaxRestarts, MaxTime}, ChildSpecs}}.
 
-simple_one_for_one(Name, ChildSpec) -> simple_one_for_one(Name, [], ChildSpec).
-simple_one_for_one(Name, Options, ChildSpec) -> supervisor_spec(Name, simple_one_for_one, Options, [ChildSpec]).
+one_for_all(Name, ChildSpecs)          -> one_for_all(Name, [], ChildSpecs).
+one_for_all(Name, Options, ChildSpecs) -> supervisor_childspec(Name, one_for_all, Options, ChildSpecs).
 
-supervisor_spec(Name, Type, Options, ChildSpecs) ->
+rest_for_one(Name, ChildSpecs)          -> rest_for_one(Name, [], ChildSpecs).
+rest_for_one(Name, Options, ChildSpecs) -> supervisor_childspec(Name, rest_for_one, Options, ChildSpecs).
+
+one_for_one(Name, ChildSpecs)          -> one_for_one(Name, [], ChildSpecs).
+one_for_one(Name, Options, ChildSpecs) -> supervisor_childspec(Name, one_for_one, Options, ChildSpecs).
+
+simple_one_for_one(Name, ChildSpec)          -> simple_one_for_one(Name, [], ChildSpec).
+simple_one_for_one(Name, Options, ChildSpec) -> supervisor_childspec(Name, simple_one_for_one, Options, [ChildSpec]).
+
+worker(Name)          -> worker(Name, []).
+worker(Name, Options) -> worker_childspec(Name, Options).
+
+supervisor_childspec(Name, Type, Options, ChildSpecs) when is_list(ChildSpecs) ->
     Register    = {proplists:get_value(register,     Options, local), Name},
     MaxRestarts =  proplists:get_value(max_restarts, Options, 10),
     MaxTime     =  proplists:get_value(max_time,     Options, 10),
-    {Register, {easy_sup, start_link, [{Type, MaxRestarts, MaxTime, ChildSpecs}]}}.
+    SupervisorChildspec = {Name, {easy_sup, start_link, [{Register, {Type, MaxRestarts, MaxTime, ChildSpecs}}]},
+			   transient, 1000, supervisor, []},
+    supervisor:check_childspecs([SupervisorChildspec]),
+    SupervisorChildspec.
 
-worker(Name) ->
-    worker(Name, []).
-worker(Name0, Options) ->
+worker_childspec(Name0, Options) ->
     Name               = spec_name(Name0),
     Mfa={Module, _, _} = spec_mfa(Name0),
     Restart            = proplists:get_value(restart,  Options, transient),
@@ -54,31 +70,81 @@ spec_mfa(Mfa={_M,_F,_A}) ->
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%%% Tests %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%% Tests (Homegrown testing HACK!) %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 test() ->
-    dot(),test_worker(),
-    dot(),test_supervisor(),
-    dot(),test_big(),
-    io:format("~n"),
-    'Test success!'.
+    Parent = self(),
+    spawn_link(fun() ->
+		       process_flag(trap_exit, true),
+		       dot(),test_supervisor_start(),
+		       dot(),test_worker(),
+		       dot(),test_supervisor(),
+		       flush(),
+		       io:format("~n"),
+		       Parent ! done
+	       end),
+    receive
+	done -> receive after 100 -> 'Test Success' end; M -> {'FAILURE', M} after 5000 -> 'FAILURE - TIMEOUT' end.
+
+flush() ->
+    receive M -> io:format("Flush: ~p~n", [M]), flush() after 0 -> ok end.
+
+dot() ->
+    io:format(".").
 
 test_supervisor() ->
-    {{local, top}, {easy_sup, start_link, [{one_for_all,        10, 10, [_]}]}} = one_for_all       (top, [worker(test)]),
-    {{local, top}, {easy_sup, start_link, [{one_for_rest,       10, 10, [_]}]}} = one_for_rest      (top, [worker(test)]),
-    {{local, top}, {easy_sup, start_link, [{simple_one_for_one, 10, 10, [_]}]}} = simple_one_for_one(top, worker(test)),
-    {{local, top}, {easy_sup, start_link, [{one_for_one,        10, 10, [_]}]}} = one_for_one       (top, [worker(test)]).
+    {top,{easy_sup,start_link,[{{local,top},{one_for_all,10,10,[_]}}]},transient,1000,supervisor,[]}
+	= one_for_all(top, [worker(test)]),
+    {top,{_,_,[{_,{rest_for_one,10,10,[_]}}]},transient,1000,supervisor,[]} = rest_for_one(top, [worker(test)]),
+    {top,{_,_,[{_,{one_for_one,10,10,[_]}}]},transient,1000,supervisor,[]} = one_for_one(top, [worker(test)]),
+    {top,{_,_,[{_,{simple_one_for_one,10,10,[_]}}]},transient,1000,supervisor,[]} = simple_one_for_one(top, worker(test)).
 
 test_worker() ->
     {test, {test, start_link, []}, transient, 1000, worker, [test]} = worker(test),
     {test, {test, start, [a,b,c]}, transient, 1000, worker, [test]} = worker({test, start, [a,b,c]}),
     {test, {test, start_link, []}, transient, 1000, worker, [test]} = worker(test, [{modules, [test]}]).
 
-test_big() ->
-    io:format("~n~p~n", [one_for_all(se_sup, [worker(se_mapper),
-					      simple_one_for_one(se_endpoints_sup, worker({se_endpoint, start, [ahe]}))
-		    ])]).
+test_supervisor_start() ->
+    {ok, Pid} = easy_sup:start_link(
+		  easy_sup:one_for_one( root,
+					[easy_sup:one_for_all( middle , [{max_restarts, 5}, {max_time, 20}],
+							       [easy_sup:worker({easy_sup, testWorker, []}),
+								easy_sup:simple_one_for_one( dynamic1,
+											     easy_sup:worker(dyn_worker1))]),
+					 easy_sup:rest_for_one( middle2,
+								[easy_sup:simple_one_for_one( dynamic2 ,
+											      [{max_restarts, 3}, {max_time, 33}],
+											      easy_sup:worker(dyn_worker1)),
+								 easy_sup:simple_one_for_one( dynamic3 , easy_sup:worker(dyn_worker1))]),
+					 easy_sup:worker( {easy_sup, testWorker, []}),
+					 easy_sup:simple_one_for_one( dynamic4 , easy_sup:worker(dyn_worker2, [{restart, temporary}]))])),
 
-dot() ->
-    io:format(".").
+    MRef = erlang:monitor(process, Pid),
+    exit(Pid, shutdown),
+    receive
+	{'DOWN', MRef, process, Pid, shutdown} ->
+	    ok
+    after
+	5000 ->
+	    exit(testfailure)
+    end,
+    receive
+	{'EXIT', Pid, shutdown} ->
+	    ok
+    after
+	5000 ->
+	    exit(testfailure)
+    end.
+
+testWorker() ->
+    Parent = self(),
+    spawn_link(fun() ->
+		       process_flag(trap_exit, true),
+		       Parent ! {ok, self()},
+		       receive M -> M
+		       after 5000 -> timeout
+		       end
+	       end),
+    receive M -> M after 5000 -> timeout2 end.
+
